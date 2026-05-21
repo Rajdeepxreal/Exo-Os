@@ -546,20 +546,27 @@
         };
 
         const HardwareManager = {
-            isAssistActive: false, assistTriggered: false,
+            isAssistActive: false, 
+            assistTriggered: false,
+            lastSentAngle: 0, // Prevents spamming the Wi-Fi network
+
             init() {
+                // Manual Angle Override
                 document.getElementById('angle-slider').addEventListener('input', (e) => {
+                    if (this.isAssistActive) return; // Block manual slider if AI is driving
                     const val = e.target.value;
                     document.getElementById('angle-display').textContent = val;
                     WSManager.send(`A:${val}`);
                 });
 
+                // Motor Speed Delay
                 document.getElementById('speed-slider').addEventListener('input', (e) => {
                     const val = e.target.value;
                     document.getElementById('speed-display').textContent = val;
                     WSManager.send(`S:${val}`);
                 });
 
+                // Toggle AI Mode
                 document.getElementById('assist-toggle').addEventListener('change', (e) => {
                     this.isAssistActive = e.target.checked;
                     const badge = document.getElementById('assist-badge');
@@ -569,22 +576,63 @@
                         badge.textContent = "ACTIVE";
                         badge.className = "text-2xl font-orbitron font-bold text-purple-400 mt-1";
                         icon.className = "w-12 h-12 rounded-full bg-purple-500/20 flex items-center justify-center text-purple-400 text-xl shadow-[0_0_15px_rgba(139,92,246,0.4)]";
-                        UIManager.showToast('Active Assist Engaged', 'info');
+                        UIManager.showToast('Proportional AI Assist Engaged', 'info');
                     } else {
                         document.getElementById('assist-settings').classList.add('opacity-50');
                         badge.textContent = "PASSIVE";
                         badge.className = "text-2xl font-orbitron font-bold text-gray-500 mt-1";
                         icon.className = "w-12 h-12 rounded-full bg-gray-500/20 flex items-center justify-center text-gray-400 text-xl";
+                        // Safely park the motor when turned off
+                        WSManager.send('A:0');
+                        document.getElementById('angle-display').textContent = 0;
+                        document.getElementById('angle-slider').value = 0;
                     }
                 });
             },
+
             checkActiveAssist(pitch) {
                 if (!this.isAssistActive) return;
-                if (pitch > 25 && !this.assistTriggered) {
-                    this.assistTriggered = true;
-                    WSManager.send('A:45'); 
-                    UIManager.showToast('Motor Assist Triggered!', 'success');
-                    setTimeout(() => { WSManager.send('A:0'); this.assistTriggered = false; }, 1000);
+
+                // 1. Read the LIVE Dropdown UI Settings dynamically
+                const selects = document.querySelectorAll('#assist-settings select');
+                if (selects.length < 2) return;
+                
+                const thresholdStr = selects[0].value; 
+                const powerStr = selects[1].value;     
+
+                // Use RegEx to extract the raw numbers from the dropdown text (15, 25, 40) and (30, 45, 90)
+                const triggerThreshold = parseInt(thresholdStr.match(/\d+/)[0]); 
+                const maxAssistAngle = parseInt(powerStr.match(/\d+/)[0]);      
+
+                // 2. Proportional Phase Tracking
+                if (pitch >= triggerThreshold) {
+                    if (!this.assistTriggered) {
+                        this.assistTriggered = true;
+                        UIManager.showToast('Motor Engaged: Supporting Load', 'success');
+                    }
+
+                    // Amplifies human effort by 1.5x, but caps it at the safety limit set in the dropdown
+                    let calculatedAssist = pitch * 1.5; 
+                    let targetAngle = Math.min(Math.floor(calculatedAssist), maxAssistAngle);
+
+                    // Only send data if the angle has changed enough (smooths out Wi-Fi traffic)
+                    if (Math.abs(targetAngle - this.lastSentAngle) > 2) {
+                        WSManager.send(`A:${targetAngle}`);
+                        document.getElementById('angle-display').textContent = targetAngle;
+                        document.getElementById('angle-slider').value = targetAngle;
+                        this.lastSentAngle = targetAngle;
+                    }
+
+                } 
+                // 3. Hysteresis Buffer
+                // Waits until the leg drops 5 degrees BELOW the threshold before turning off. 
+                // This prevents the motor from rapidly twitching on and off right at the threshold edge.
+                else if (pitch < (triggerThreshold - 5) && this.assistTriggered) {
+                    this.assistTriggered = false;
+                    WSManager.send('A:0');
+                    document.getElementById('angle-display').textContent = 0;
+                    document.getElementById('angle-slider').value = 0;
+                    this.lastSentAngle = 0;
                 }
             }
         };
@@ -768,9 +816,9 @@
 
                 this.frameCount++;
                 if (this.frameCount % Math.floor(160 - (this.baseSpeed * 2)) === 0) { 
-                    let gapSize = 220; // Very forgiving gap
-                    let gapY = Math.random() * (this.canvas.height - gapSize - 60) + 30;
-                    this.gates.push({ x: this.canvas.width, w: 30, gapTop: gapY, gapBottom: gapY + gapSize, passed: false });
+                    let gapSize = 180; // Very forgiving gap
+                    let gapY = Math.random() * (this.canvas.height - gapSize - 70) + 30;
+                    this.gates.push({ x: this.canvas.width, w: 30, gapTop: gapY, gapBottom: gapY + gapSize, passed: false }); //game controller
                 }
 
                 for (let i = this.gates.length - 1; i >= 0; i--) {
